@@ -1,0 +1,20 @@
+{
+  "name": "youtube_to_markdown",
+  "version": "1.0.0",
+  "description": "Retrieves transcript from YT-URL and generates an article formatted as markdown.",
+  "main": "index.ts",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "ts-node -P tsconfig.json index.ts"
+  },
+  "author": "ASI",
+  "license": "ISC",
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "openai": "^4.85.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.7.3",
+    "youtube-transcript": "^1.2.1"
+  },
+  "type": "commonjs"
+}
