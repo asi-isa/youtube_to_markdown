@@ -241,17 +241,22 @@ async function processVideo(
  */
 async function main(): Promise<void> {
   const argv = await yargs(hideBin(process.argv))
-    .option("url", {
+    .option("urls", {
       alias: "u",
       type: "string",
-      description: "YouTube video or channel URL",
+      array: true,
+      description: "YouTube video URLs",
+    })
+    .option("channel", {
+      alias: "c",
+      type: "string",
+      description: "YouTube channel URL",
     })
     .option("n", {
       type: "number",
-      description: "Number of recent videos to process (for channel URLs)",
+      description: "Number of recent videos to process from channel",
       default: 5,
     })
-    .demandOption("url")
     .help().argv;
 
   const openaiApiKey = process.env.OPENAI_API_KEY;
@@ -261,29 +266,38 @@ async function main(): Promise<void> {
   }
 
   try {
-    // Check if URL is a video or channel
-    if (argv.url.includes("/watch?v=") || argv.url.includes("youtu.be/")) {
-      // Process single video
-      const videoId = extractYoutubeVideoId(argv.url);
-      await processVideo(
-        {
-          videoId,
-          title: `Video_${videoId}`, // We'll get actual title from transcript
-          url: argv.url,
-        },
-        openaiApiKey
-      );
-    } else {
-      // Process channel
-      console.log(`Fetching ${argv.n} recent videos from channel...`);
-      const videos = await getChannelVideos(argv.url, argv.n);
+    // Process individual video URLs
+    if (argv.urls && argv.urls.length > 0) {
+      console.log("\nProcessing individual videos...");
+      for (const url of argv.urls) {
+        const videoId = extractYoutubeVideoId(url);
+        await processVideo(
+          {
+            videoId,
+            title: `Video_${videoId}`,
+            url,
+          },
+          openaiApiKey
+        );
+      }
+    }
+
+    // Process channel URL
+    if (argv.channel) {
+      console.log(`\nFetching ${argv.n} recent videos from channel...`);
+      const videos = await getChannelVideos(argv.channel, argv.n);
       console.log(`Found ${videos.length} videos. Processing...`);
       for (const video of videos) {
         await processVideo(video, openaiApiKey);
       }
     }
 
-    console.log("Processing complete!");
+    if (!argv.urls && !argv.channel) {
+      console.error("Error: Please provide either --urls or --channel");
+      process.exit(1);
+    }
+
+    console.log("\nAll processing complete!");
   } catch (error) {
     console.error("An error occurred:", error);
     process.exit(1);
