@@ -6,9 +6,96 @@ import * as process from "process";
 import * as dotenv from "dotenv";
 import { YoutubeTranscript } from "youtube-transcript";
 import OpenAI from "openai";
+import yargs from "yargs";
+import { hideBin } from "yargs/helpers";
+import { fetch } from "undici";
 
 // Load environment variables from .env (if present)
 dotenv.config();
+
+interface VideoInfo {
+  videoId: string;
+  title: string;
+  url: string;
+}
+
+interface YouTubeApiResponse {
+  items: {
+    id: {
+      kind: string;
+      videoId: string;
+    };
+    snippet: {
+      title: string;
+    };
+  }[];
+}
+
+/**
+ * Extract channel ID from a YouTube channel URL
+ */
+async function getChannelId(channelUrl: string): Promise<string> {
+  try {
+    // Handle @username format
+    const usernameMatch = channelUrl.match(/@([^/]+)/);
+    if (usernameMatch) {
+      const username = usernameMatch[1];
+      const response = await fetch(`https://www.youtube.com/@${username}`, {
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+        },
+      });
+      const html = await response.text();
+      const match = html.match(/"channelId":"([^"]+)"|browseId":"([^"]+)"/);
+      if (!match) throw new Error("Could not find channel ID");
+      return match[1] || match[2];
+    }
+
+    // Handle direct channel URLs
+    const channelMatch = channelUrl.match(/channel\/([^/]+)/);
+    if (channelMatch) return channelMatch[1];
+
+    throw new Error("Invalid channel URL format");
+  } catch (error) {
+    throw new Error(`Failed to get channel ID: ${(error as Error).message}`);
+  }
+}
+
+/**
+ * Fetch recent videos from a YouTube channel
+ */
+async function getChannelVideos(
+  channelUrl: string,
+  limit: number
+): Promise<VideoInfo[]> {
+  try {
+    const channelId = await getChannelId(channelUrl);
+    const apiKey = process.env.YOUTUBE_API_KEY;
+
+    if (!apiKey) {
+      throw new Error("YOUTUBE_API_KEY not found in environment variables");
+    }
+
+    const response = await fetch(
+      `https://www.googleapis.com/youtube/v3/search?key=${apiKey}&channelId=${channelId}&part=snippet,id&order=date&maxResults=${limit}`
+    );
+
+    const data = (await response.json()) as YouTubeApiResponse;
+
+    return data.items
+      .filter((item) => item.id.kind === "youtube#video")
+      .map((item) => ({
+        videoId: item.id.videoId,
+        title: item.snippet.title,
+        url: `https://www.youtube.com/watch?v=${item.id.videoId}`,
+      }));
+  } catch (error) {
+    throw new Error(
+      `Failed to fetch channel videos: ${(error as Error).message}`
+    );
+  }
+}
 
 /**
  * Extract the video ID from a YouTube URL.
@@ -91,41 +178,81 @@ Now, produce the final blog post in Markdown below:
 }
 
 /**
+ * Process a single video
+ */
+async function processVideo(
+  video: VideoInfo,
+  openaiApiKey: string
+): Promise<void> {
+  try {
+    console.log(`Processing video: ${video.title}`);
+
+    // Create the main transcripts directory if it doesn't exist
+    const transcriptsDir = "transcripts";
+    if (!fs.existsSync(transcriptsDir)) {
+      fs.mkdirSync(transcriptsDir, { recursive: true });
+    }
+
+    // Create a directory for the video if it doesn't exist
+    const videoDir = path.join(transcriptsDir, video.videoId);
+    if (!fs.existsSync(videoDir)) {
+      fs.mkdirSync(videoDir, { recursive: true });
+    }
+
+    // Generate filenames
+    const sanitizedTitle = video.title
+      .replace(/[^\w\s-]/g, "")
+      .trim()
+      .replace(/\s+/g, "_");
+    const rawFilename = path.join(videoDir, `transcript_${video.videoId}.txt`);
+    const mdFilename = path.join(
+      videoDir,
+      `${sanitizedTitle}_${video.videoId}.md`
+    );
+
+    // Check if files already exist
+    if (fs.existsSync(rawFilename) && fs.existsSync(mdFilename)) {
+      console.log(`Skipping ${video.title} - transcript already exists`);
+      return;
+    }
+
+    // Fetch and process the transcript
+    const rawTranscript = await fetchYoutubeTranscript(video.videoId);
+    fs.writeFileSync(rawFilename, rawTranscript, { encoding: "utf-8" });
+    console.log(`Raw transcript saved to ${rawFilename}`);
+
+    // Enhance with AI
+    console.log("Enhancing transcript with AI...");
+    const enhancedMarkdown = await enhanceTranscriptWithAI(
+      rawTranscript,
+      openaiApiKey
+    );
+    fs.writeFileSync(mdFilename, enhancedMarkdown, { encoding: "utf-8" });
+    console.log(`Enhanced blog article saved to ${mdFilename}`);
+  } catch (error) {
+    console.error(
+      `Error processing video ${video.title}: ${(error as Error).message}`
+    );
+  }
+}
+
+/**
  * Main program entry point
  */
 async function main(): Promise<void> {
-  // Check if a YouTube URL is passed as an argument
-  if (process.argv.length < 3) {
-    console.error("Usage: ts-node index.ts <youtube_url>");
-    process.exit(1);
-  }
-
-  const youtubeUrl = process.argv[2];
-
-  // Extract the video ID from the URL
-  const videoId = extractYoutubeVideoId(youtubeUrl);
-
-  console.log(`Fetching transcript for video ID: ${videoId}`);
-
-  // Fetch the raw transcript
-  const rawTranscript = await fetchYoutubeTranscript(videoId);
-
-  // Create the main transcripts directory if it doesn't exist
-  const transcriptsDir = "transcripts";
-  if (!fs.existsSync(transcriptsDir)) {
-    fs.mkdirSync(transcriptsDir, { recursive: true });
-  }
-
-  // Create a directory for the video if it doesn't exist
-  const videoDir = path.join(transcriptsDir, videoId);
-  if (!fs.existsSync(videoDir)) {
-    fs.mkdirSync(videoDir, { recursive: true });
-  }
-
-  // Write raw transcript to a text file inside the video directory
-  const rawFilename = path.join(videoDir, `transcript_${videoId}.txt`);
-  fs.writeFileSync(rawFilename, rawTranscript, { encoding: "utf-8" });
-  console.log(`Raw transcript saved to ${rawFilename}`);
+  const argv = await yargs(hideBin(process.argv))
+    .option("channelUrl", {
+      alias: "c",
+      type: "string",
+      description: "YouTube channel URL",
+    })
+    .option("n", {
+      type: "number",
+      description: "Number of recent videos to process",
+      default: 5,
+    })
+    .demandOption("channelUrl")
+    .help().argv;
 
   // Read the OPENAI_API_KEY from environment
   const openaiApiKey = process.env.OPENAI_API_KEY;
@@ -134,38 +261,25 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // Enhance the transcript with AI
-  console.log(
-    "Enhancing transcript with AI to create a blog article in Markdown..."
-  );
-  const enhancedMarkdown = await enhanceTranscriptWithAI(
-    rawTranscript,
-    openaiApiKey
-  );
+  try {
+    console.log(`Fetching ${argv.n} recent videos from channel...`);
+    const videos = await getChannelVideos(argv.channelUrl, argv.n);
 
-  // Extract a title from the resulting Markdown (looking for first-level heading)
-  const titleMatch = enhancedMarkdown.match(/^# (.*?)$/m);
-  const title = titleMatch ? titleMatch[1] : "blog_article";
+    console.log(`Found ${videos.length} videos. Processing...`);
 
-  // Create sanitized filename from the title (remove special chars & spaces)
-  const sanitizedTitle = title
-    .replace(/[^\w\s-]/g, "")
-    .trim()
-    .replace(/\s+/g, "_");
+    // Process videos sequentially to avoid rate limiting
+    for (const video of videos) {
+      await processVideo(video, openaiApiKey);
+    }
 
-  // Save the enhanced article in Markdown
-  const mdFilename = path.join(videoDir, `${sanitizedTitle}_${videoId}.md`);
-
-  // Remove markdown code fences (```markdown ... ```) if present
-  const cleanedMarkdown = enhancedMarkdown
-    .replace(/^```markdown\n/, "")
-    .replace(/\n```$/, "");
-
-  fs.writeFileSync(mdFilename, cleanedMarkdown, { encoding: "utf-8" });
-  console.log(`Enhanced blog article saved to ${mdFilename}`);
+    console.log("All videos processed successfully!");
+  } catch (error) {
+    console.error("An error occurred:", error);
+    process.exit(1);
+  }
 }
 
-// Run the main function, catch any unhandled errors
+// Run the main function
 main().catch((err) => {
   console.error("An error occurred:", err);
   process.exit(1);
