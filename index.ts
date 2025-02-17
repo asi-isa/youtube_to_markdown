@@ -241,20 +241,19 @@ async function processVideo(
  */
 async function main(): Promise<void> {
   const argv = await yargs(hideBin(process.argv))
-    .option("channelUrl", {
-      alias: "c",
+    .option("url", {
+      alias: "u",
       type: "string",
-      description: "YouTube channel URL",
+      description: "YouTube video or channel URL",
     })
     .option("n", {
       type: "number",
-      description: "Number of recent videos to process",
+      description: "Number of recent videos to process (for channel URLs)",
       default: 5,
     })
-    .demandOption("channelUrl")
+    .demandOption("url")
     .help().argv;
 
-  // Read the OPENAI_API_KEY from environment
   const openaiApiKey = process.env.OPENAI_API_KEY;
   if (!openaiApiKey) {
     console.error("Error: OPENAI_API_KEY not found in environment variables!");
@@ -262,17 +261,29 @@ async function main(): Promise<void> {
   }
 
   try {
-    console.log(`Fetching ${argv.n} recent videos from channel...`);
-    const videos = await getChannelVideos(argv.channelUrl, argv.n);
-
-    console.log(`Found ${videos.length} videos. Processing...`);
-
-    // Process videos sequentially to avoid rate limiting
-    for (const video of videos) {
-      await processVideo(video, openaiApiKey);
+    // Check if URL is a video or channel
+    if (argv.url.includes("/watch?v=") || argv.url.includes("youtu.be/")) {
+      // Process single video
+      const videoId = extractYoutubeVideoId(argv.url);
+      await processVideo(
+        {
+          videoId,
+          title: `Video_${videoId}`, // We'll get actual title from transcript
+          url: argv.url,
+        },
+        openaiApiKey
+      );
+    } else {
+      // Process channel
+      console.log(`Fetching ${argv.n} recent videos from channel...`);
+      const videos = await getChannelVideos(argv.url, argv.n);
+      console.log(`Found ${videos.length} videos. Processing...`);
+      for (const video of videos) {
+        await processVideo(video, openaiApiKey);
+      }
     }
 
-    console.log("All videos processed successfully!");
+    console.log("Processing complete!");
   } catch (error) {
     console.error("An error occurred:", error);
     process.exit(1);
